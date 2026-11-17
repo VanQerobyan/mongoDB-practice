@@ -1,12 +1,4 @@
-// Task 4, Part B - Clinic: reads, updates, and deletions with criteria
 
-// Run 04_seed.mongodb before every run of this file so the checks start at 9/9.
-// Local sequence: python3 .lab/run_task4.py seed, then python3 .lab/run_task4.py crud
-// Manual command: mongosh 'mongodb://localhost:27019' --norc --quiet --file 05_crud.mongodb
-// Set CLINIC_LAB_PASSWORD to the local throwaway password from Task 1.
-// No actual password is stored here; <password> is only a placeholder.
-// Results below are from the verified seed + CRUD rerun; generated IDs vary.
-// Both complete sequences matched all required checks and finished at 8/4.
 
 use('clinic');
 
@@ -46,38 +38,28 @@ async function runTask4CRUD() {
     users: await clinicDB.users.countDocuments({}),
     appointments: await clinicDB.appointments.countDocuments({})
   }));
-  // Actual result (CRUD_INITIAL_COUNTS): {"users": 9, "appointments": 9}
   if (initialCounts.users !== 9 || initialCounts.appointments !== 9) {
     throw new Error('Run 04_seed.mongodb immediately before 05_crud.mongodb.');
   }
 
-  // R1. Every doctor: 3 users.
   await record('R1', () => clinicDB.users.find(
     { role: 'doctor' },
     { _id: 0, name: 1, email: 1, role: 1, active: 1, doctor: 1 }
   ).sort({ name: 1 }).toArray());
-  // Actual result (R1): [{"name": "Dr. Elena Rossi", "email": "elena.rossi@clinic.test", "role": "doctor", "active": true, "doctor": {"specialty": "cardiology", "licenseNo": "MD-1001"}}, {"name": "Dr. Hamid Karimi", "email": "hamid.karimi@clinic.test", "role": "doctor", "active": true, "doctor": {"specialty": "pediatrics", "licenseNo": "MD-1002"}}, {"name": "Dr. Sofia Lindqvist", "email": "sofia.lindqvist@clinic.test", "role": "doctor", "active": false, "doctor": {"specialty": "dermatology", "licenseNo": "MD-1003"}}]
 
-  // R2. Active doctors: Rossi and Karimi.
   await record('R2', () => clinicDB.users.find(
     { role: 'doctor', active: true }, { _id: 0, name: 1, active: 1 }
   ).sort({ name: 1 }).toArray());
-  // Actual result (R2): [{"name": "Dr. Elena Rossi", "active": true}, {"name": "Dr. Hamid Karimi", "active": true}]
 
-  // R3. Patients without a phone: Clara; the role condition excludes Dr. Lindqvist.
   await record('R3', () => clinicDB.users.find(
     { role: 'patient', phone: { $exists: false } }, { _id: 0, name: 1, email: 1 }
   ).sort({ name: 1 }).toArray());
-  // Actual result (R3): [{"name": "Clara Meyer", "email": "clara.meyer@example.com"}]
 
-  // R4. Patients allergic to penicillin: Ana.
   await record('R4', () => clinicDB.users.find(
     { role: 'patient', 'patient.allergies': 'penicillin' },
     { _id: 0, name: 1, 'patient.allergies': 1 }
   ).sort({ name: 1 }).toArray());
-  // Actual result (R4): [{"name": "Ana Costa", "patient": {"allergies": ["penicillin"]}}]
 
-  // R5. Empty or missing allergies: Ben and Eva.
   await record('R5', () => clinicDB.users.find({
     role: 'patient',
     $or: [
@@ -85,88 +67,60 @@ async function runTask4CRUD() {
       { 'patient.allergies': { $exists: false } }
     ]
   }, { _id: 0, name: 1, 'patient.allergies': 1 }).sort({ name: 1 }).toArray());
-  // Actual result (R5): [{"name": "Ben Okoye", "patient": {"allergies": []}}, {"name": "Eva Nilsson", "patient": {}}]
 
-  // R6. Patients born before 1990-01-01 UTC: Ana and Dmitri.
   await record('R6', () => clinicDB.users.find(
     { role: 'patient', 'patient.birthDate': { $lt: new Date('1990-01-01T00:00:00Z') } },
     { _id: 0, name: 1, 'patient.birthDate': 1 }
   ).sort({ name: 1 }).toArray());
-  // Actual result (R6): [{"name": "Ana Costa", "patient": {"birthDate": {"$date": "1985-04-12T00:00:00Z"}}}, {"name": "Dmitri Volkov", "patient": {"birthDate": {"$date": "1972-02-19T00:00:00Z"}}}]
 
-  // R7. March 2025 appointments, earliest first: 5 appointments.
   await record('R7', () => clinicDB.appointments.find({
     start: { $gte: new Date('2025-03-01T00:00:00Z'), $lt: new Date('2025-04-01T00:00:00Z') }
   }, { _id: 0, start: 1, durationMin: 1, reason: 1, status: 1, fee: 1 }).sort({ start: 1 }).toArray());
-  // Actual result (R7): [{"start": {"$date": "2025-03-10T09:30:00Z"}, "durationMin": 30, "reason": "Blood pressure check", "status": "completed", "fee": 90}, {"start": {"$date": "2025-03-12T11:00:00Z"}, "durationMin": 20, "reason": "Vaccination", "status": "completed", "fee": 60}, {"start": {"$date": "2025-03-20T16:00:00Z"}, "durationMin": 30, "reason": "Palpitations", "status": "scheduled", "fee": 100}, {"start": {"$date": "2025-03-25T14:00:00Z"}, "durationMin": 30, "reason": "Follow-up", "status": "scheduled", "fee": 70}, {"start": {"$date": "2025-03-28T09:00:00Z"}, "durationMin": 30, "reason": "Stress test", "status": "cancelled", "fee": 0}]
 
-  // R8. Completed appointments with fees from 80 through 130, inclusive.
-  // The projection returns only reason and fee, as requested.
   await record('R8', () => clinicDB.appointments.find(
     { status: 'completed', fee: { $gte: 80, $lte: 130 } },
     { _id: 0, reason: 1, fee: 1 }
   ).sort({ fee: 1, reason: 1 }).toArray());
-  // Actual result (R8): [{"reason": "Fever", "fee": 80}, {"reason": "Blood pressure check", "fee": 90}, {"reason": "Chest pain follow-up", "fee": 120}]
 
-  // R9. Count reasons containing follow-up anywhere, ignoring case.
   await record('R9', () => clinicDB.appointments.countDocuments({ reason: { $regex: 'follow-up', $options: 'i' } }));
-  // Actual result (R9): 2
 
-  // R10. Both conditions must match the same prescription array element.
   await record('R10', () => clinicDB.appointments.find({
     prescriptions: { $elemMatch: { drug: 'atenolol', days: { $gte: 7 } } }
   }, { _id: 0, reason: 1, prescriptions: 1 }).sort({ start: 1 }).toArray());
-  // Actual result (R10): [{"reason": "Chest pain follow-up", "prescriptions": [{"drug": "atenolol", "dose": "25mg", "days": 30}]}]
 
-  // U1. Reactivate Dr. Sofia Lindqvist.
   await record('U1', () => clinicDB.users.updateOne(
     { role: 'doctor', email: 'sofia.lindqvist@clinic.test' }, { $set: { active: true } }
   ));
-  // Actual result (U1): {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}
 
-  // U2. Increase every scheduled appointment's fee by 10.
   await record('U2', () => clinicDB.appointments.updateMany({ status: 'scheduled' }, { $inc: { fee: 10 } }));
-  // Actual result (U2): {"acknowledged": true, "insertedId": null, "matchedCount": 3, "modifiedCount": 3, "upsertedCount": 0}
   await record('U2_FEES', () => clinicDB.appointments.find(
     { status: 'scheduled' }, { _id: 0, reason: 1, fee: 1 }
   ).sort({ reason: 1 }).toArray());
-  // Actual result (U2_FEES): [{"reason": "Follow-up", "fee": 80}, {"reason": "Palpitations", "fee": 110}, {"reason": "Test results", "fee": 100}]
 
-  // U3. Run exactly the same $addToSet update twice; latex must not be duplicated.
   await record('U3_FIRST', () => clinicDB.users.updateOne(
     { role: 'patient', email: 'ben.okoye@example.com' },
     { $addToSet: { 'patient.allergies': 'latex' } }
   ));
-  // Actual result (U3_FIRST): {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}
   await record('U3_SECOND', () => clinicDB.users.updateOne(
     { role: 'patient', email: 'ben.okoye@example.com' },
     { $addToSet: { 'patient.allergies': 'latex' } }
   ));
-  // Actual result (U3_SECOND): {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 0, "upsertedCount": 0}
 
-  // U4. Cancel Palpitations and set its fee to 0 in the same update.
   await record('U4', () => clinicDB.appointments.updateOne(
     { reason: 'Palpitations' }, { $set: { status: 'cancelled', fee: 0 } }
   ));
-  // Actual result (U4): {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}
   await record('U4_RESULT', () => clinicDB.appointments.findOne(
     { reason: 'Palpitations' }, { _id: 0, reason: 1, status: 1, fee: 1 }
   ));
-  // Actual result (U4_RESULT): {"reason": "Palpitations", "status": "cancelled", "fee": 0}
 
-  // U5. $push creates the missing prescriptions array on Blood pressure check.
   await record('U5', () => clinicDB.appointments.updateOne(
     { reason: 'Blood pressure check' },
     { $push: { prescriptions: { drug: 'amlodipine', dose: '5mg', days: 30 } } }
   ));
-  // Actual result (U5): {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}
   await record('U5_RESULT', () => clinicDB.appointments.findOne(
     { reason: 'Blood pressure check' }, { _id: 0, reason: 1, prescriptions: 1 }
   ));
-  // Actual result (U5_RESULT): {"reason": "Blood pressure check", "prescriptions": [{"drug": "amlodipine", "dose": "5mg", "days": 30}]}
 
-  // U6. The email equality filter is included in the inserted upsert document.
-  // Felix's birth date is a valid lab example; the assignment does not specify one.
   const felixUpsert = await record('U6', () => clinicDB.users.updateOne(
     { email: 'felix.brandt@example.com' },
     { $set: {
@@ -175,69 +129,44 @@ async function runTask4CRUD() {
     } },
     { upsert: true }
   ));
-  // Actual result (U6): {"acknowledged": true, "insertedId": {"$oid": "6ae874a781a2818b40a28144"}, "matchedCount": 0, "modifiedCount": 0, "upsertedCount": 1}
-  // mongosh 2.13.0 returned the generated upsert ID as insertedId in this run.
-  // Keep that actual reply above, and explicitly capture the assignment's
-  // upsertedId check value from either supported response field below.
   const upsertedId = felixUpsert.upsertedId ?? felixUpsert.insertedId;
   if (felixUpsert.upsertedCount !== 1 || !upsertedId) {
     throw new Error('U6 did not create the expected new patient. Run 04_seed.mongodb first.');
   }
-  // This is a value extracted from the reply, not an additional server response.
   await record('U6_CAPTURED_UPSERT_ID', () => ({ upsertedId }));
-  // Actual captured value (U6_CAPTURED_UPSERT_ID): {"upsertedId": {"$oid": "6ae874a781a2818b40a28144"}}
   await record('U6_USER_COUNT', () => clinicDB.users.countDocuments({}));
-  // Actual result (U6_USER_COUNT): 10
   await record('U6_RESULT', () => clinicDB.users.findOne(
     { email: 'felix.brandt@example.com' }, { _id: 0 }
   ));
-  // Actual result (U6_RESULT): {"email": "felix.brandt@example.com", "active": true, "name": "Felix Brandt", "patient": {"birthDate": {"$date": "1992-08-14T00:00:00Z"}}, "role": "patient"}
 
-  // U7. The users validator must reject this invalid role.
   await record('U7', () => clinicDB.users.updateOne(
     { role: 'patient', email: 'ben.okoye@example.com' }, { $set: { role: 'superuser' } }
   ), 121);
-  // Actual error (U7): MongoServerError [code 121]: Document failed validation
   await record('U7_UNCHANGED_PATIENT', () => clinicDB.users.findOne(
     { email: 'ben.okoye@example.com' }, { _id: 0, name: 1, role: 1, 'patient.allergies': 1 }
   ));
-  // Actual result (U7_UNCHANGED_PATIENT): {"name": "Ben Okoye", "role": "patient", "patient": {"allergies": ["latex"]}}
 
-  // D1. Delete the patient created by the upsert.
   await record('D1', () => clinicDB.users.deleteOne({ email: 'felix.brandt@example.com', role: 'patient' }));
-  // Actual result (D1): {"acknowledged": true, "deletedCount": 1}
 
-  // D2. Delete the original cancelled appointment and the one cancelled in U4.
   await record('D2', () => clinicDB.appointments.deleteMany({ status: 'cancelled' }));
-  // Actual result (D2): {"acknowledged": true, "deletedCount": 2}
 
-  // D3. Query Ana's ID, delete her appointments, then delete her user document.
   const ana = await record('D3_FIND_ANA', () => clinicDB.users.findOne(
     { role: 'patient', email: 'ana.costa@example.com' }, { _id: 1, name: 1 }
   ));
-  // Actual result (D3_FIND_ANA): {"_id": {"$oid": "6ae874a3ed850c0af6a762aa"}, "name": "Ana Costa"}
   if (!ana) throw new Error('Ana Costa is missing; run 04_seed.mongodb before this file.');
   await record('D3_DELETE_APPOINTMENTS', () => clinicDB.appointments.deleteMany({ patientId: ana._id }));
-  // Actual result (D3_DELETE_APPOINTMENTS): {"acknowledged": true, "deletedCount": 3}
   await record('D3_DELETE_USER', () => clinicDB.users.deleteOne({ _id: ana._id }));
-  // Actual result (D3_DELETE_USER): {"acknowledged": true, "deletedCount": 1}
 
-  // Read back the final documents and validator metadata for verification.
   await record('CRUD_FINAL_USERS', () => clinicDB.users.find({}).sort({ name: 1 }).toArray());
-  // Actual result (CRUD_FINAL_USERS; shortened): {"count": 8, "users": [{"name": "Ben Okoye", "role": "patient", "active": true}, {"name": "Clara Meyer", "role": "patient", "active": true}, {"name": "Dmitri Volkov", "role": "patient", "active": true}, {"name": "Dr. Elena Rossi", "role": "doctor", "active": true}, {"name": "Dr. Hamid Karimi", "role": "doctor", "active": true}, {"name": "Dr. Sofia Lindqvist", "role": "doctor", "active": true}, {"name": "Eva Nilsson", "role": "patient", "active": true}, {"name": "Maya Admin", "role": "admin", "active": true}]}
   await record('CRUD_FINAL_APPOINTMENTS', () => clinicDB.appointments.find({}).sort({ start: 1 }).toArray());
-  // Actual result (CRUD_FINAL_APPOINTMENTS; shortened): {"count": 4, "appointments": [{"reason": "ECG", "status": "completed", "fee": 150}, {"reason": "Fever", "status": "completed", "fee": 80}, {"reason": "Vaccination", "status": "completed", "fee": 60}, {"reason": "Follow-up", "status": "scheduled", "fee": 80}]}
   await record('CRUD_VALIDATORS_AFTER', async () => (await clinicDB.getCollectionInfos())
     .filter(info => ['users', 'appointments'].includes(info.name))
     .sort((left, right) => left.name.localeCompare(right.name)));
-  // Actual result (CRUD_VALIDATORS_AFTER; shortened): [{"name": "appointments", "validationLevel": "strict", "validationAction": "error"}, {"name": "users", "validationLevel": "strict", "validationAction": "error"}]
 
-  // Required final check after D3: 8 users and 4 appointments.
   const finalCounts = await record('CRUD_FINAL_COUNTS', async () => ({
     users: await clinicDB.users.countDocuments({}),
     appointments: await clinicDB.appointments.countDocuments({})
   }));
-  // Actual result (CRUD_FINAL_COUNTS): {"users": 8, "appointments": 4}
   if (finalCounts.users !== 8 || finalCounts.appointments !== 4) {
     throw new Error('Final counts do not match the required 8 users and 4 appointments.');
   }
@@ -245,32 +174,5 @@ async function runTask4CRUD() {
 
 runTask4CRUD();
 
-// D3 changes the dataset. Run 04_seed.mongodb again before starting Task 5.
 
-// Written answer 1. Why does the order of the D3 deletions matter?
-// Appointments reference Ana through patientId, and MongoDB does not automatically
-// cascade a user deletion. I removed her appointments first and then the user, so
-// an interrupted cleanup would not leave her appointments pointing to a deleted
-// patient. Deleting the user first would leave orphan appointments until they were
-// removed, and a later lookup of her user document would no longer recover her _id.
 
-// Written answer 2. Explain $elemMatch and give an example where dot notation differs.
-// I used $elemMatch to require both conditions on the same prescription element.
-// In the made-up appointment below, atenolol lasts only 3 days while another drug
-// lasts 10 days. Separate dot-notation conditions match different items and return
-// the appointment, while $elemMatch finds no single item satisfying both conditions.
-// This example is not inserted into the clinic dataset:
-// {
-//   doctorId: new ObjectId(), patientId: new ObjectId(),
-//   start: new Date('2025-05-01T09:00:00Z'), durationMin: 30,
-//   reason: 'Array matching example', status: 'scheduled', fee: 0,
-//   prescriptions: [
-//     { drug: 'atenolol', dose: '25mg', days: 3 },
-//     { drug: 'paracetamol', dose: '250mg', days: 10 }
-//   ]
-// }
-// Separate dot-notation query (matches):
-// { 'prescriptions.drug': 'atenolol', 'prescriptions.days': { $gte: 7 } }
-// Same-element query (does not match):
-// { prescriptions: { $elemMatch: { drug: 'atenolol', days: { $gte: 7 } } } }
-// Source: https://www.mongodb.com/docs/v8.0/reference/operator/query/elemmatch/

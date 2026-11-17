@@ -1,15 +1,3 @@
-// Task 3 - Clinic: schema validators with $jsonSchema
-// Tested with MongoDB Community 8.0.32 and mongosh 2.13.0.
-//
-// Run on lab-admin. The file drops and recreates clinic.users and
-// clinic.appointments, as required by Task 3, and removes its temporary data.
-// Local runner: python3 .lab/run_task3.py run
-// Manual command: mongosh 'mongodb://localhost:27019' --norc --quiet --file 03_validators.mongodb
-// Set CLINIC_LAB_PASSWORD to the local throwaway password from Task 1.
-// No actual password is stored here; <password> is only a placeholder.
-// All results below were recorded from real commands; generated IDs vary on reruns.
-// A second complete run repeated all outcomes and restored empty collections,
-// strict/error validation, and the administrator's original two roles.
 
 use('clinic');
 
@@ -22,8 +10,6 @@ async function runTask3() {
     '@localhost:27019/clinic?authSource=admin&serverSelectionTimeoutMS=5000';
   const clinicDB = await connect(adminURI);
 
-  // Capture expected errors without preventing the remaining tests from running.
-  // Unexpected errors and unexpected successes stop execution.
   async function record(label, operation, expectedErrorCode = null) {
     let result;
     try {
@@ -51,15 +37,10 @@ async function runTask3() {
     return result;
   }
 
-  // Step 1. Drop the old collections, including Task 2's Matrix Test fixture.
   await record('DROP_USERS', () => clinicDB.users.drop());
-  // Actual result (DROP_USERS): true
   await record('DROP_APPOINTMENTS', () => clinicDB.appointments.drop());
-  // Actual result (DROP_APPOINTMENTS): true
   await record('DROP_OLD_SCRATCH', () => clinicDB.scratch_appointments.drop());
-  // Actual result (DROP_OLD_SCRATCH): true
 
-  // All BSON number types are allowed; the assignment does not require integers.
   const numberTypes = ['double', 'int', 'long', 'decimal'];
   const appointmentStatuses = ['scheduled', 'completed', 'cancelled'];
 
@@ -68,7 +49,7 @@ async function runTask3() {
     required: ['name', 'email', 'role', 'active'],
     additionalProperties: false,
     properties: {
-      _id: {}, // Allow MongoDB's automatic _id without adding an extra type rule.
+      _id: {},
       name: { bsonType: 'string', minLength: 2, maxLength: 80 },
       email: { bsonType: 'string', pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' },
       phone: { bsonType: 'string', minLength: 7, maxLength: 20, pattern: '^[0-9+() -]+$' },
@@ -95,7 +76,6 @@ async function runTask3() {
         }
       }
     },
-    // Exactly one role branch must match. not + required forbids a field's presence.
     oneOf: [
       {
         properties: { role: { enum: ['doctor'] } },
@@ -150,16 +130,12 @@ async function runTask3() {
     validationLevel: 'strict',
     validationAction: 'error'
   }));
-  // Actual result (CREATE_VALIDATED_USERS): {"ok": 1}
   await record('CREATE_VALIDATED_APPOINTMENTS', () => clinicDB.createCollection('appointments', {
     validator: { $jsonSchema: appointmentsSchema },
     validationLevel: 'strict',
     validationAction: 'error'
   }));
-  // Actual result (CREATE_VALIDATED_APPOINTMENTS): {"ok": 1}
-  // Source: https://www.mongodb.com/docs/v8.0/reference/operator/query/jsonschema/
 
-  // Valid baselines let each rejected insert isolate the mistake named in its comment.
   function adminUser(changes = {}) {
     return { name: 'Validation Admin', email: 'validation.admin@clinic.test', role: 'admin', active: true, ...changes };
   }
@@ -185,147 +161,84 @@ async function runTask3() {
     };
   }
 
-  // Step 2. The ten required rejected inserts, followed by extra boundary tests.
-  // A. Missing required field: email.
   const missingEmail = adminUser();
   delete missingEmail.email;
   await record('INVALID_A_REQUIRED', () => clinicDB.users.insertOne(missingEmail), 121);
-  // Actual error (INVALID_A_REQUIRED): MongoServerError [code 121]: Document failed validation
 
-  // B. start must be a BSON date, not a plain string.
   await record('INVALID_B_START_TYPE', () => clinicDB.appointments.insertOne(appointment({
     start: '2025-02-03T09:00:00Z'
   })), 121);
-  // Actual error (INVALID_B_START_TYPE): MongoServerError [code 121]: Document failed validation
 
-  // C. nurse is outside the role enum.
   await record('INVALID_C_ROLE_ENUM', () => clinicDB.users.insertOne(adminUser({ role: 'nurse' })), 121);
-  // Actual error (INVALID_C_ROLE_ENUM): MongoServerError [code 121]: Document failed validation
 
-  // D. durationMin: 0 is below the minimum of 5.
   await record('INVALID_D_DURATION', () => clinicDB.appointments.insertOne(appointment({ durationMin: 0 })), 121);
-  // Actual error (INVALID_D_DURATION): MongoServerError [code 121]: Document failed validation
 
-  // E. This email has no @ and fails the email pattern.
   await record('INVALID_E_EMAIL_PATTERN', () => clinicDB.users.insertOne(adminUser({ email: 'invalid-email.test' })), 121);
-  // Actual error (INVALID_E_EMAIL_PATTERN): MongoServerError [code 121]: Document failed validation
 
-  // F. unexpectedField is not an allowed top-level user property.
   await record('INVALID_F_EXTRA_FIELD', () => clinicDB.users.insertOne(adminUser({ unexpectedField: true })), 121);
-  // Actual error (INVALID_F_EXTRA_FIELD): MongoServerError [code 121]: Document failed validation
 
-  // G. Each prescription requires days.
   await record('INVALID_G_PRESCRIPTION_ITEM', () => clinicDB.appointments.insertOne(appointment({
     prescriptions: [{ drug: 'paracetamol', dose: '250mg' }]
   })), 121);
-  // Actual error (INVALID_G_PRESCRIPTION_ITEM): MongoServerError [code 121]: Document failed validation
 
-  // H. null does not satisfy the numeric fee type.
   await record('INVALID_H_NULL_FEE', () => clinicDB.appointments.insertOne(appointment({ fee: null })), 121);
-  // Actual error (INVALID_H_NULL_FEE): MongoServerError [code 121]: Document failed validation
 
-  // I. A doctor must have a doctor subdocument.
   await record('INVALID_I_DOCTOR_REQUIRED', () => clinicDB.users.insertOne(adminUser({ role: 'doctor' })), 121);
-  // Actual error (INVALID_I_DOCTOR_REQUIRED): MongoServerError [code 121]: Document failed validation
 
-  // J. A patient must not have a doctor subdocument.
   await record('INVALID_J_PATIENT_WITH_DOCTOR', () => clinicDB.users.insertOne(patientUser({
     doctor: { specialty: 'cardiology', licenseNo: 'MD-9002' }
   })), 121);
-  // Actual error (INVALID_J_PATIENT_WITH_DOCTOR): MongoServerError [code 121]: Document failed validation
 
-  // Additional tests cover role exclusions, nested rules, and upper/lower bounds.
   const extraInvalidCases = [
-    // K. licenseNo must be MD- followed by exactly four digits.
     ['INVALID_K_LICENSE', 'users', doctorUser({ doctor: { specialty: 'cardiology', licenseNo: 'MD-12' } })],
-    // L. allergies must contain unique strings.
     ['INVALID_L_DUPLICATE_ALLERGIES', 'users', patientUser({ patient: { birthDate: new Date('1990-01-01T00:00:00Z'), allergies: ['latex', 'latex'] } })],
-    // M. An admin must have neither role-specific subdocument.
     ['INVALID_M_ADMIN_WITH_DOCTOR', 'users', adminUser({ doctor: { specialty: 'cardiology', licenseNo: 'MD-9003' } })],
-    // N. A patient must have a patient subdocument.
     ['INVALID_N_PATIENT_REQUIRED', 'users', adminUser({ role: 'patient' })],
-    // O. A doctor must not carry a patient subdocument.
     ['INVALID_O_DOCTOR_WITH_PATIENT', 'users', doctorUser({ patient: { birthDate: new Date('1990-01-01T00:00:00Z') } })],
-    // P. C+ is outside the bloodType enum.
     ['INVALID_P_BLOOD_TYPE', 'users', patientUser({ patient: { birthDate: new Date('1990-01-01T00:00:00Z'), bloodType: 'C+' } })],
-    // Q. A phone may not contain letters.
     ['INVALID_Q_PHONE_PATTERN', 'users', adminUser({ phone: '555-CALL' })],
-    // R. Prescription days may not exceed 365.
     ['INVALID_R_PRESCRIPTION_DAYS', 'appointments', appointment({ prescriptions: [{ drug: 'atenolol', dose: '25mg', days: 366 }] })],
-    // S. At most ten prescriptions may be stored in one appointment.
     ['INVALID_S_PRESCRIPTION_COUNT', 'appointments', appointment({ prescriptions: Array.from({ length: 11 }, () => ({ drug: 'atenolol', dose: '25mg', days: 30 })) })],
-    // T. A prescription item allows only drug, dose, and days.
     ['INVALID_T_PRESCRIPTION_EXTRA', 'appointments', appointment({ prescriptions: [{ drug: 'atenolol', dose: '25mg', days: 30, extra: true }] })],
-    // U. patient.birthDate must be a BSON date.
     ['INVALID_U_BIRTH_DATE', 'users', patientUser({ patient: { birthDate: '1990-01-01' } })],
-    // V. durationMin may not exceed 240.
     ['INVALID_V_DURATION_MAX', 'appointments', appointment({ durationMin: 241 })],
-    // W/X. name must contain between 2 and 80 characters.
     ['INVALID_W_NAME_MIN', 'users', adminUser({ name: 'A' })],
     ['INVALID_X_NAME_MAX', 'users', adminUser({ name: 'A'.repeat(81) })],
-    // Y/Z. reason must contain between 3 and 200 characters.
     ['INVALID_Y_REASON_MIN', 'appointments', appointment({ reason: 'AB' })],
     ['INVALID_Z_REASON_MAX', 'appointments', appointment({ reason: 'A'.repeat(201) })]
   ];
   for (const [label, collection, document] of extraInvalidCases) {
     await record(label, () => clinicDB.getCollection(collection).insertOne(document), 121);
   }
-  // Actual error (INVALID_K_LICENSE): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_L_DUPLICATE_ALLERGIES): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_M_ADMIN_WITH_DOCTOR): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_N_PATIENT_REQUIRED): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_O_DOCTOR_WITH_PATIENT): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_P_BLOOD_TYPE): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_Q_PHONE_PATTERN): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_R_PRESCRIPTION_DAYS): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_S_PRESCRIPTION_COUNT): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_T_PRESCRIPTION_EXTRA): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_U_BIRTH_DATE): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_V_DURATION_MAX): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_W_NAME_MIN): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_X_NAME_MAX): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_Y_REASON_MIN): MongoServerError [code 121]: Document failed validation
-  // Actual error (INVALID_Z_REASON_MAX): MongoServerError [code 121]: Document failed validation
 
   await record('COUNTS_AFTER_REJECTIONS', async () => ({
     users: await clinicDB.users.countDocuments({}),
     appointments: await clinicDB.appointments.countDocuments({})
   }));
-  // Actual result (COUNTS_AFTER_REJECTIONS): {"users": 0, "appointments": 0}
 
-  // Step 3. Accept one valid user of each role and a valid appointment with a prescription.
   const doctor = await record('ACCEPT_DOCTOR', () => clinicDB.users.insertOne(doctorUser({
     phone: '+1 (555) 020-1001', createdAt: new Date('2025-01-01T00:00:00Z')
   })));
-  // Actual result (ACCEPT_DOCTOR): {"acknowledged": true, "insertedId": {"$oid": "6ae8679f7806a534c4982e80"}}
   const patient = await record('ACCEPT_PATIENT', () => clinicDB.users.insertOne(patientUser()));
-  // Actual result (ACCEPT_PATIENT): {"acknowledged": true, "insertedId": {"$oid": "6ae8679f7806a534c4982e81"}}
   const admin = await record('ACCEPT_ADMIN', () => clinicDB.users.insertOne(adminUser()));
-  // Actual result (ACCEPT_ADMIN): {"acknowledged": true, "insertedId": {"$oid": "6ae8679f7806a534c4982e82"}}
   const acceptedAppointment = await record('ACCEPT_APPOINTMENT', () => clinicDB.appointments.insertOne(appointment({
     doctorId: doctor.insertedId,
     patientId: patient.insertedId,
     notes: 'A valid appointment with one prescription.',
     prescriptions: [{ drug: 'atenolol', dose: '25mg', days: 30 }]
   })));
-  // Actual result (ACCEPT_APPOINTMENT): {"acknowledged": true, "insertedId": {"$oid": "6ae8679f7806a534c4982e85"}}
 
   await record('DELETE_ACCEPTED_APPOINTMENT', () => clinicDB.appointments.deleteOne({ _id: acceptedAppointment.insertedId }));
-  // Actual result (DELETE_ACCEPTED_APPOINTMENT): {"acknowledged": true, "deletedCount": 1}
   await record('DELETE_ACCEPTED_USERS', () => clinicDB.users.deleteMany({
     _id: { $in: [doctor.insertedId, patient.insertedId, admin.insertedId] }
   }));
-  // Actual result (DELETE_ACCEPTED_USERS): {"acknowledged": true, "deletedCount": 3}
 
-  // Step 4. Create scratch_appointments without a validator.
   await record('CREATE_SCRATCH', () => clinicDB.createCollection('scratch_appointments'));
-  // Actual result (CREATE_SCRATCH): {"ok": 1}
   const scratchSeed = await record('SEED_SCRATCH', () => clinicDB.scratch_appointments.insertMany([
     appointment({ reason: 'scratch valid', status: 'scheduled', fee: 50 }),
     appointment({ reason: 'scratch bad status', status: 'done', fee: 25 }),
     appointment({ reason: 'scratch bad fee', status: 'scheduled', fee: -5 })
   ]));
-  // Actual result (SEED_SCRATCH): {"acknowledged": true, "insertedIds": {"0": {"$oid": "6ae8679f7806a534c4982e8c"}, "1": {"$oid": "6ae8679f7806a534c4982e8d"}, "2": {"$oid": "6ae8679f7806a534c4982e8e"}}}
 
   const scratchSchema = {
     bsonType: 'object',
@@ -336,15 +249,12 @@ async function runTask3() {
     }
   };
 
-  // The two original lab-admin roles do not grant collMod. Record the denial,
-  // then temporarily grant only collMod on the two collections we must modify.
   await record('COLLMOD_WITHOUT_EXTRA_PRIVILEGE', () => clinicDB.runCommand({
     collMod: 'scratch_appointments',
     validator: { $jsonSchema: scratchSchema },
     validationLevel: 'moderate',
     validationAction: 'warn'
   }), 13);
-  // Actual error (COLLMOD_WITHOUT_EXTRA_PRIVILEGE; shortened): MongoServerError [code 13]: not authorized on clinic to execute command { collMod: "scratch_appointments", ... }
 
   await record('CREATE_VALIDATOR_EDITOR_ROLE', async () => {
     const definition = {
@@ -359,89 +269,60 @@ async function runTask3() {
     }
     return clinicDB.createRole({ role: 'task3ValidatorEditor', ...definition });
   });
-  // Actual result (CREATE_VALIDATOR_EDITOR_ROLE): {"ok": 1}
   const adminAuthDB = clinicDB.getSiblingDB('admin');
   await record('GRANT_VALIDATOR_EDITOR_ROLE', () => adminAuthDB.grantRolesToUser('labAdmin', [
     { role: 'task3ValidatorEditor', db: 'clinic' }
   ]));
-  // Actual result (GRANT_VALIDATOR_EDITOR_ROLE): {"ok": 1}
 
   try {
     const editorDB = await connect(adminURI);
 
-    // (i) Add the scratch validator with moderate + warn.
     await record('SCRATCH_MODERATE_WARN', () => editorDB.runCommand({
       collMod: 'scratch_appointments',
       validator: { $jsonSchema: scratchSchema },
       validationLevel: 'moderate',
       validationAction: 'warn'
     }));
-    // Actual result (SCRATCH_MODERATE_WARN): {"ok": 1}
 
-    // (ii) The invalid insert is checked but accepted because the action is warn.
-    // Insert a copy so that repeating the same bad values later gets a new _id.
     const scratchBadDocument = appointment({ reason: 'scratch new bad', status: 'done', fee: -10 });
     await record('SCRATCH_WARN_BAD_INSERT', () => editorDB.scratch_appointments.insertOne({ ...scratchBadDocument }));
-    // Actual result (SCRATCH_WARN_BAD_INSERT): {"acknowledged": true, "insertedId": {"$oid": "6ae8679f7806a534c4982e91"}}
-    // Server log (shortened): {"time": "2026-11-02T14:36:15.631+04:00", "message": "Document would fail validation", "namespace": "clinic.scratch_appointments", "document": {"reason": "scratch new bad", "status": "done", "fee": -10}}
 
-    // (iii) This already-invalid document can still be updated during migration.
-    // warn permits the write; this MongoDB 8.0.32 run also logged a warning.
-    // With the error action, moderate permits updates to previously invalid documents.
     await record('SCRATCH_UPDATE_OLD_BAD', () => editorDB.scratch_appointments.updateOne(
       { _id: scratchSeed.insertedIds[1] },
       { $set: { reason: 'scratch old bad updated' } }
     ));
-    // Actual result (SCRATCH_UPDATE_OLD_BAD): {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}
-    // Server log (shortened): {"time": "2026-11-02T14:36:15.635+04:00", "message": "Document would fail validation", "namespace": "clinic.scratch_appointments", "document": {"reason": "scratch old bad updated", "status": "done", "fee": 25}}
 
-    // (iv) List every violator using $nor with the same $jsonSchema.
     await record('SCRATCH_LIST_VIOLATORS', () => editorDB.scratch_appointments.find(
       { $nor: [{ $jsonSchema: scratchSchema }] },
       { _id: 0, reason: 1, status: 1, fee: 1 }
     ).sort({ reason: 1 }).toArray());
-    // Actual result (SCRATCH_LIST_VIOLATORS): [{"reason": "scratch bad fee", "status": "scheduled", "fee": -5}, {"reason": "scratch new bad", "status": "done", "fee": -10}, {"reason": "scratch old bad updated", "status": "done", "fee": 25}]
 
-    // (v) Fix invalid statuses and negative fees, then confirm no violators remain.
     await record('SCRATCH_FIX_STATUSES', () => editorDB.scratch_appointments.updateMany(
       { status: { $nin: appointmentStatuses } },
       { $set: { status: 'scheduled' } }
     ));
-    // Actual result (SCRATCH_FIX_STATUSES): {"acknowledged": true, "insertedId": null, "matchedCount": 2, "modifiedCount": 2, "upsertedCount": 0}
-    // The new bad document still has a negative fee at this intermediate step.
-    // Server log (shortened): {"time": "2026-11-02T14:36:15.649+04:00", "message": "Document would fail validation", "namespace": "clinic.scratch_appointments", "document": {"reason": "scratch new bad", "status": "scheduled", "fee": -10}}
     await record('SCRATCH_FIX_FEES', () => editorDB.scratch_appointments.updateMany(
       { fee: { $lt: 0 } },
       { $set: { fee: 0 } }
     ));
-    // Actual result (SCRATCH_FIX_FEES): {"acknowledged": true, "insertedId": null, "matchedCount": 2, "modifiedCount": 2, "upsertedCount": 0}
     await record('SCRATCH_REMAINING_VIOLATORS', () => editorDB.scratch_appointments.countDocuments({
       $nor: [{ $jsonSchema: scratchSchema }]
     }));
-    // Actual result (SCRATCH_REMAINING_VIOLATORS): 0
 
     await record('SCRATCH_STRICT_ERROR', () => editorDB.runCommand({
       collMod: 'scratch_appointments',
       validationLevel: 'strict',
       validationAction: 'error'
     }));
-    // Actual result (SCRATCH_STRICT_ERROR): {"ok": 1}
-    // Repeat the invalid values from (ii). strict + error now rejects the insert.
     await record('SCRATCH_STRICT_BAD_INSERT', () => editorDB.scratch_appointments.insertOne({ ...scratchBadDocument }), 121);
-    // Actual error (SCRATCH_STRICT_BAD_INSERT): MongoServerError [code 121]: Document failed validation
 
-    // (vi) Remove the temporary collection.
     await record('DROP_SCRATCH', () => editorDB.scratch_appointments.drop());
-    // Actual result (DROP_SCRATCH): true
 
-    // Step 5. Print the explicitly configured validation level and action.
     await record('INSPECT_USERS_VALIDATION', async () => {
       const info = (await editorDB.getCollectionInfos({ name: 'users' }))[0];
       return { validationLevel: info.options.validationLevel, validationAction: info.options.validationAction };
     });
-    // Actual result (INSPECT_USERS_VALIDATION): {"validationLevel": "strict", "validationAction": "error"}
 
-    // Step 6 (bonus). Combine the JSON schema and a cross-field inequality rule.
     await record('ADD_DISTINCT_REFERENCES_RULE', () => editorDB.runCommand({
       collMod: 'appointments',
       validator: {
@@ -453,62 +334,34 @@ async function runTask3() {
       validationLevel: 'strict',
       validationAction: 'error'
     }));
-    // Actual result (ADD_DISTINCT_REFERENCES_RULE): {"ok": 1}
-    // Source: https://www.mongodb.com/docs/v8.0/core/schema-validation/specify-query-expression-rules/
 
     const sameUserId = new ObjectId();
     await record('BONUS_REJECT_SAME_USER', () => editorDB.appointments.insertOne(appointment({
       doctorId: sameUserId, patientId: sameUserId
     })), 121);
-    // Actual error (BONUS_REJECT_SAME_USER): MongoServerError [code 121]: Document failed validation
 
-    // Positive control: different ObjectIds still satisfy the final validator.
-    // Their existence in users is not checked by this collection validator.
     const bonusAccepted = await record('BONUS_ACCEPT_DIFFERENT_USERS', () => editorDB.appointments.insertOne(appointment()));
-    // Actual result (BONUS_ACCEPT_DIFFERENT_USERS): {"acknowledged": true, "insertedId": {"$oid": "6ae8679f7806a534c4982e99"}}
     await record('DELETE_BONUS_APPOINTMENT', () => editorDB.appointments.deleteOne({ _id: bonusAccepted.insertedId }));
-    // Actual result (DELETE_BONUS_APPOINTMENT): {"acknowledged": true, "deletedCount": 1}
   } finally {
-    // Restore lab-admin's original two roles even if a migration test fails.
     await record('REVOKE_VALIDATOR_EDITOR_ROLE', () => adminAuthDB.revokeRolesFromUser('labAdmin', [
       { role: 'task3ValidatorEditor', db: 'clinic' }
     ]));
-    // Actual result (REVOKE_VALIDATOR_EDITOR_ROLE): {"ok": 1}
     await record('DROP_VALIDATOR_EDITOR_ROLE', () => clinicDB.dropRole('task3ValidatorEditor'));
-    // Actual result (DROP_VALIDATOR_EDITOR_ROLE): {"ok": 1}
   }
 
   const finalDB = await connect(adminURI);
   await record('FINAL_ADMIN_STATUS', () => finalDB.runCommand({ connectionStatus: 1 }));
-  // Actual result (FINAL_ADMIN_STATUS): {"authInfo": {"authenticatedUsers": [{"user": "labAdmin", "db": "admin"}], "authenticatedUserRoles": [{"role": "readWriteAnyDatabase", "db": "admin"}, {"role": "userAdminAnyDatabase", "db": "admin"}]}, "ok": 1}
   await record('FINAL_COLLECTION_OPTIONS', async () => (await finalDB.getCollectionInfos()).map(info => ({
     name: info.name,
     validationLevel: info.options.validationLevel,
     validationAction: info.options.validationAction
   })).sort((left, right) => left.name.localeCompare(right.name)));
-  // Actual result (FINAL_COLLECTION_OPTIONS): [{"name": "appointments", "validationLevel": "strict", "validationAction": "error"}, {"name": "users", "validationLevel": "strict", "validationAction": "error"}]
   await record('FINAL_COUNTS', async () => ({
     users: await finalDB.users.countDocuments({}),
     appointments: await finalDB.appointments.countDocuments({})
   }));
-  // Actual result (FINAL_COUNTS): {"users": 0, "appointments": 0}
 }
 
 runTask3();
 
-// Written answer 1. Name two project rules a collection validator cannot enforce.
-// A validator cannot confirm that an appointment's doctorId refers to an existing
-// document in users. It also cannot confirm that the referenced user has role:
-// 'doctor', or that patientId belongs to a patient, because it cannot look up other
-// documents. The application must check the references and roles before writing
-// an appointment.
 
-// Written answer 2. Explain strict versus moderate and when to start with moderate.
-// With validationAction: 'error', strict rejects invalid inserts and updates.
-// moderate still rejects invalid inserts and enforces the rules for previously
-// valid documents, but permits updates to documents that were already invalid.
-// I would start with moderate for legacy data, fix the violators gradually, and
-// then switch to strict. With warn, invalid writes are allowed; our MongoDB 8.0.32
-// log also recorded a warning for the update to the old invalid document.
-// Source: https://www.mongodb.com/docs/v8.0/core/schema-validation/specify-validation-level/
-// Source: https://www.mongodb.com/docs/v8.0/core/schema-validation/handle-invalid-documents/

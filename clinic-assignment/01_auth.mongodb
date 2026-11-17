@@ -1,35 +1,3 @@
-// Task 1 - Clinic: lab server and authentication mechanisms
-// Tested with MongoDB Community 8.0.32 and mongosh 2.13.0.
-//
-// Run this file with mongosh to test the authentication connections.
-// The --file option in mongosh 2.13.0 also accepts .mongodb files.
-// The experiments used mongosh to open and test each connection in sequence.
-// In VS Code, select the connection and supply its password separately.
-//
-// The submitted configuration has authorization: enabled, the final state of the lab.
-// To repeat the full experiment, set authorization to disabled and start only this lab server.
-// The server restart divides the experiment into two phases: open, then locked.
-// Each phase can be rerun from top to bottom; existing users are updated.
-// CLINIC_LAB_PASSWORD supplies a throwaway lab password through the local environment.
-// The submitted file contains no actual password; <password> is a placeholder.
-//
-// Step 1. The initial mongod_lab.conf used authorization: disabled.
-// mkdir -p .lab/db .lab/logs
-// mongod --config mongod_lab.conf
-// Actual result: {"command": "mongod --config mongod_lab.conf", "authorization": "disabled", "serverLog": {"time": "2026-11-02T12:40:46.711+04:00", "message": "Waiting for connections", "port": 27019}}
-//
-// Saved connection: lab-open = mongodb://localhost:27019
-// Saved connection: lab-admin = mongodb://labAdmin:<password>@localhost:27019/?authSource=admin
-// The connections are saved in the local VS Code workspace: .lab/clinic-lab.code-workspace. Do not submit that workspace.
-//
-// Open phase: CLINIC_LAB_PHASE=open mongosh 'mongodb://localhost:27019' --norc --quiet --file 01_auth.mongodb
-// Next, stop only this lab server: kill -TERM "$(cat .lab/mongod.pid)"
-// Actual result: the server shut down cleanly with exit code 0 at 2026-11-02T12:41:48.765+04:00.
-// Then change the configuration:
-// authorization: disabled -> enabled. Restart the server with the same configuration file.
-// Locked phase: CLINIC_LAB_PHASE=locked mongosh 'mongodb://localhost:27019' --norc --quiet --file 01_auth.mongodb
-// Use the same CLINIC_LAB_PASSWORD value in both phases.
-// In the prepared local environment, run: python3 .lab/run_phase.py open (or locked).
 
 use('clinic');
 
@@ -43,8 +11,6 @@ async function runTask1() {
     throw new Error('CLINIC_LAB_PHASE must be open or locked.');
   }
 
-  // This helper prints each command result and checks the expected error code.
-  // An unexpected error stops execution.
   async function record(label, operation, expectedErrorCode = null) {
     let result;
     try {
@@ -84,12 +50,8 @@ async function runTask1() {
   }
 
   if (phase === 'open') {
-    // Step 2. Use lab-open without a username or password.
     await record('OPEN_LIST_DATABASES', () => db.adminCommand({ listDatabases: 1 }));
-    // Actual result: {"databases": [{"name": "admin", "sizeOnDisk": 8192, "empty": false}, {"name": "config", "sizeOnDisk": 12288, "empty": false}, {"name": "local", "sizeOnDisk": 8192, "empty": false}], "totalSize": 28672, "totalSizeMb": 0, "ok": 1}
 
-    // Step 3. Create the first MongoDB administrator in the admin database.
-    // The first run uses createUser; later runs use updateUser with the same account settings.
     await record('CREATE_LAB_ADMIN', () => saveUser(db.getSiblingDB('admin'), {
       user: 'labAdmin',
       pwd: labPassword,
@@ -98,21 +60,14 @@ async function runTask1() {
         { role: 'readWriteAnyDatabase', db: 'admin' }
       ]
     }));
-    // Actual result: {"ok": 1}
   }
 
   if (phase === 'locked') {
-    // Step 4. Reuse lab-open after restarting the server with authorization: enabled.
-    // Actual result: {"command": "mongod --config mongod_lab.conf", "authorization": "enabled", "serverLog": {"time": "2026-11-02T12:41:59.775+04:00", "message": "Waiting for connections", "port": 27019}}
     await record('LOCKED_LIST_DATABASES', () => db.adminCommand({ listDatabases: 1 }), 13);
-    // Actual result: {"error": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "Command listDatabases requires authentication"}
 
-    // Step 5. Use lab-admin with credentials and authSource=admin.
     const adminDB = await connect(userURI('labAdmin', 'admin'));
     await record('ADMIN_CONNECTION_STATUS', () => adminDB.runCommand({ connectionStatus: 1 }));
-    // Actual result: {"authInfo": {"authenticatedUsers": [{"user": "labAdmin", "db": "admin"}], "authenticatedUserRoles": [{"role": "readWriteAnyDatabase", "db": "admin"}, {"role": "userAdminAnyDatabase", "db": "admin"}]}, "ok": 1}
 
-    // Step 6. Create MongoDB database accounts. These are separate from documents in clinic.users.
     const clinicDB = adminDB.getSiblingDB('clinic');
     await record('CREATE_MECH_SHA256', () => saveUser(clinicDB, {
       user: 'mechSha256',
@@ -120,7 +75,6 @@ async function runTask1() {
       mechanisms: ['SCRAM-SHA-256'],
       roles: [{ role: 'read', db: 'clinic' }]
     }));
-    // Actual result: {"ok": 1}
 
     await record('CREATE_MECH_SHA1', () => saveUser(clinicDB, {
       user: 'mechSha1',
@@ -128,10 +82,7 @@ async function runTask1() {
       mechanisms: ['SCRAM-SHA-1'],
       roles: [{ role: 'read', db: 'clinic' }]
     }));
-    // Actual result: {"ok": 1}
 
-    // Each helper call opens a new connection and attempts connectionStatus.
-    // If authentication fails, the connection is not established and connectionStatus is not sent to the server.
     async function checkConnection(label, user, mechanism, expectedErrorCode = null, authSource = 'clinic') {
       return record(label, async () => {
         const connectionDB = await connect(userURI(user, authSource, mechanism));
@@ -139,48 +90,24 @@ async function runTask1() {
       }, expectedErrorCode);
     }
 
-    // URI: mongodb://mechSha1:<password>@localhost:27019/clinic?authSource=clinic
     await checkConnection('SHA1_DEFAULT', 'mechSha1', null);
-    // Actual result: {"authInfo": {"authenticatedUsers": [{"user": "mechSha1", "db": "clinic"}], "authenticatedUserRoles": [{"role": "read", "db": "clinic"}]}, "ok": 1}
 
-    // URI: same as above + &authMechanism=SCRAM-SHA-1
     await checkConnection('SHA1_EXPLICIT_SHA1', 'mechSha1', 'SCRAM-SHA-1');
-    // Actual result: {"authInfo": {"authenticatedUsers": [{"user": "mechSha1", "db": "clinic"}], "authenticatedUserRoles": [{"role": "read", "db": "clinic"}]}, "ok": 1}
 
-    // URI: same as above + &authMechanism=SCRAM-SHA-256
     await checkConnection('SHA1_EXPLICIT_SHA256', 'mechSha1', 'SCRAM-SHA-256', 334);
-    // Actual result: {"error": "MongoServerError", "code": 334, "codeName": "MechanismUnavailable", "message": "Unable to use SCRAM-SHA-256 based authentication for user without any SCRAM-SHA-256 credentials registered"}
 
-    // URI: mongodb://mechSha256:<password>@localhost:27019/clinic?authSource=clinic
     await checkConnection('SHA256_DEFAULT', 'mechSha256', null);
-    // Actual result: {"authInfo": {"authenticatedUsers": [{"user": "mechSha256", "db": "clinic"}], "authenticatedUserRoles": [{"role": "read", "db": "clinic"}]}, "ok": 1}
 
-    // URI: same as above + &authMechanism=SCRAM-SHA-1
     await checkConnection('SHA256_EXPLICIT_SHA1', 'mechSha256', 'SCRAM-SHA-1', 334);
-    // Actual result: {"error": "MongoServerError", "code": 334, "codeName": "MechanismUnavailable", "message": "Unable to use SCRAM-SHA-1 based authentication for user without any SCRAM-SHA-1 credentials registered"}
 
-    // URI: same as above + &authMechanism=SCRAM-SHA-256
     await checkConnection('SHA256_EXPLICIT_SHA256', 'mechSha256', 'SCRAM-SHA-256');
-    // Actual result: {"authInfo": {"authenticatedUsers": [{"user": "mechSha256", "db": "clinic"}], "authenticatedUserRoles": [{"role": "read", "db": "clinic"}]}, "ok": 1}
 
-    // Authentication mechanism matrix, completed from the actual experiments:
-    // User       | no authMechanism | SCRAM-SHA-1                       | SCRAM-SHA-256
-    // mechSha1   | ok               | ok                                | failed: MechanismUnavailable — Unable to use SCRAM-SHA-256
-    // mechSha256 | ok               | failed: MechanismUnavailable — Unable to use SCRAM-SHA-1 | ok
-    // Both mechanism errors have code: 334 in this MongoDB version.
-    // The mechanism field in the server log was also checked for successful logins:
-    // mechSha1 -> SCRAM-SHA-1; mechSha256 -> SCRAM-SHA-256.
 
-    // Step 7. getParameter requires a separate privilege on the cluster resource.
-    // First, test the command with only the two administrator roles required by the assignment.
     await record('GET_MECHANISMS_INITIAL', () => adminDB.getSiblingDB('admin').runCommand({
       getParameter: 1,
       authenticationMechanisms: 1
     }), 13);
-    // Actual result: {"error": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on admin to execute command { getParameter: 1, authenticationMechanisms: 1, lsid: { id: UUID(\"ea20a13d-c8b1-4fe4-b220-e35f3e82c2f8\") }, $db: \"admin\" }"}
 
-    // Temporarily grant the getParameter action for this read operation.
-    // The server authentication mechanism settings remain unchanged.
     const adminAuthDB = adminDB.getSiblingDB('admin');
     await record('CREATE_PARAMETER_ROLE', async () => {
       const definition = {
@@ -192,12 +119,10 @@ async function runTask1() {
       }
       return adminAuthDB.createRole({ role: 'task1ParameterReader', ...definition });
     });
-    // Actual result: {"ok": 1}
 
     await record('GRANT_PARAMETER_ROLE', () => adminAuthDB.grantRolesToUser('labAdmin', [
       { role: 'task1ParameterReader', db: 'admin' }
     ]));
-    // Actual result: {"ok": 1}
 
     try {
       const parameterDB = await connect(userURI('labAdmin', 'admin'));
@@ -205,54 +130,22 @@ async function runTask1() {
         getParameter: 1,
         authenticationMechanisms: 1
       }));
-      // Actual result: {"authenticationMechanisms": ["MONGODB-X509", "SCRAM-SHA-1", "SCRAM-SHA-256"], "ok": 1}
     } finally {
       await record('REVOKE_PARAMETER_ROLE', () => adminAuthDB.revokeRolesFromUser('labAdmin', [
         { role: 'task1ParameterReader', db: 'admin' }
       ]));
-      // Actual result: {"ok": 1}
       await record('DROP_PARAMETER_ROLE', () => adminAuthDB.dropRole('task1ParameterReader'));
-      // Actual result: {"ok": 1}
     }
 
-    // Step 8. The password is correct, but mechSha256 was not created in the admin database.
-    // URI: mongodb://mechSha256:<password>@localhost:27019/clinic?authSource=admin
     await checkConnection('WRONG_AUTH_SOURCE', 'mechSha256', null, 18, 'admin');
-    // Actual result: {"error": "MongoServerError", "code": 18, "codeName": "AuthenticationFailed", "message": "Authentication failed."}
 
-    // Final check: the administrator has only the two roles required by the assignment.
     const finalAdminDB = await connect(userURI('labAdmin', 'admin'));
     await record('FINAL_ADMIN_CONNECTION_STATUS', () => finalAdminDB.runCommand({ connectionStatus: 1 }));
-    // Actual result: {"authInfo": {"authenticatedUsers": [{"user": "labAdmin", "db": "admin"}], "authenticatedUserRoles": [{"role": "readWriteAnyDatabase", "db": "admin"}, {"role": "userAdminAnyDatabase", "db": "admin"}]}, "ok": 1}
   }
 }
 
 runTask1();
 
-// Written answer 1. Why create the first user before enabling authorization?
-// Creating the administrator first gives us an account to log in with when authorization is enabled.
-// MongoDB also has a localhost exception: if the server has no users or roles,
-// the first administrator can be created from localhost after authorization is enabled.
-// In this lab, the user already existed, so the locked server rejected the unauthenticated listDatabases command.
-// Source: https://www.mongodb.com/docs/v8.0/core/localhost-exception/
 
-// Written answer 2. What does authSource mean, and why did step 8 fail?
-// authSource identifies the database where the MongoDB account was created and its credentials are checked.
-// We created mechSha256 in clinic, but step 8 tried to authenticate it against admin, so the correct
-// username and password still produced Authentication failed.
-// The /clinic part of the URI selects the working database; it does not override an explicit authSource.
-// Source: https://www.mongodb.com/docs/manual/reference/connection-string-options/
 
-// Written answer 3. What happened when authMechanism was omitted?
-// Both users connected successfully without authMechanism, although each had credentials for only one mechanism.
-// This shows that the client can select a mechanism supported by both the client and the server
-// for that user, even when the URI does not specify one.
-// In our experiment, mechSha1 used SCRAM-SHA-1 and mechSha256 used SCRAM-SHA-256.
-// Source: https://www.mongodb.com/docs/manual/core/security-scram/
 
-// Written answer 4. Why is bindIp: 0.0.0.0 with authorization: disabled dangerous?
-// Binding to 0.0.0.0 makes the server listen on all IPv4 network interfaces.
-// If the network rules allow a connection, someone could read, change, or delete data
-// without an account because authorization is disabled.
-// This lab listens only on 127.0.0.1, and authorization is enabled after the experiments.
-// Source: https://www.mongodb.com/docs/manual/core/security-mongodb-configuration/
