@@ -1,0 +1,351 @@
+// Task 2 - Clinic: database users, roles, and the permission matrix
+// Tested with MongoDB Community 8.0.32 and mongosh 2.13.0.
+//
+// Predictions below were written before any Task 2 database commands were run.
+// They are retained as predictions; observed results are recorded separately.
+//
+// Predicted permission matrix:
+// Operation                         | app     | auditor | reception | admin
+// A: find a user                     | allowed | allowed | allowed   | allowed
+// B: insert an appointment           | allowed | denied  | allowed   | allowed
+// C: update the Matrix Test phone    | allowed | denied  | allowed   | allowed
+// D: delete a matrix test appointment| allowed | denied  | denied    | allowed
+// E: create a non-unique email index | allowed | denied  | denied    | allowed
+// F: list collection names          | allowed | allowed | allowed   | allowed
+//
+// Predicted missing actions: auditor B=insert, C=update, D=remove, E=createIndex;
+// reception D=remove and E=createIndex.
+// F uses getCollectionNames(), which can list authorized collections without
+// the database-wide listCollections action. This is why reception is predicted
+// to succeed even though frontdesk contains only find, insert, and update.
+// Source: https://www.mongodb.com/docs/manual/reference/method/db.getCollectionNames/
+
+use('clinic');
+
+// Run with mongosh, which allows this file to reconnect as each database user.
+// Results below are from the first full run, except RECEPTION_AUTHORIZED_NAMES,
+// which was recorded during the successful rerun. Generated IDs vary between runs.
+// Rerun confirmed: existing collections were reused, the original account roles
+// were restored, all 24 permission outcomes repeated, and no appointments remained.
+// Set CLINIC_LAB_PASSWORD to the same local throwaway password used in Task 1.
+// Local runner: python3 .lab/run_task2.py run
+// Manual command: mongosh 'mongodb://localhost:27019' --norc --quiet --file 02_roles.mongodb
+// No real password is stored in this submitted file; <password> is a placeholder.
+// Saved connection strings (local VS Code workspace: .lab/clinic-lab.code-workspace):
+// lab-app       = mongodb://clinicApp:<password>@localhost:27019/clinic?authSource=clinic
+// lab-auditor   = mongodb://auditor:<password>@localhost:27019/clinic?authSource=clinic
+// lab-reception = mongodb://reception:<password>@localhost:27019/clinic?authSource=clinic
+// lab-admin     = mongodb://labAdmin:<password>@localhost:27019/clinic?authSource=admin
+// Each run restores the initial account roles and resets only the matrix fixtures.
+// The file stops if it finds validators or unrelated clinic documents.
+
+async function runTask2() {
+  const labPassword = process.env.CLINIC_LAB_PASSWORD || '<password>';
+  if (labPassword === '<password>') {
+    throw new Error('Set CLINIC_LAB_PASSWORD to your throwaway lab password before running.');
+  }
+
+  // Log actual command results. Permission tests may capture Unauthorized errors
+  // and continue, so a denied operation does not prevent testing the next cell.
+  async function record(label, operation, allowDenied = false) {
+    let entry;
+    try {
+      entry = { label, status: 'allowed', result: await operation() };
+    } catch (error) {
+      entry = {
+        label,
+        status: 'denied',
+        error: {
+          name: error.name,
+          code: error.code,
+          codeName: error.codeName,
+          message: error.message.split('\n')[0]
+        }
+      };
+      print('__CLINIC_TASK2__ ' + EJSON.stringify(entry, { relaxed: true }));
+      if (!allowDenied || error.code !== 13) throw error;
+      return entry;
+    }
+    print('__CLINIC_TASK2__ ' + EJSON.stringify(entry, { relaxed: true }));
+    return entry;
+  }
+
+  function userURI(user, authSource = 'clinic') {
+    return 'mongodb://' + encodeURIComponent(user) + ':' + encodeURIComponent(labPassword) +
+      '@localhost:27019/clinic?authSource=' + authSource + '&serverSelectionTimeoutMS=5000';
+  }
+
+  const clinicDB = await connect(userURI('labAdmin', 'admin'));
+
+  // Step 1. Check the starting state before resetting our own test data.
+  const collectionInfo = await record('INITIAL_COLLECTIONS', () => clinicDB.getCollectionInfos());
+  // Actual result (INITIAL_COLLECTIONS): allowed; []
+  for (const collection of collectionInfo.result) {
+    if (['users', 'appointments'].includes(collection.name) && collection.options.validator) {
+      throw new Error('Task 2 expects collections without validators; review the existing schema first.');
+    }
+  }
+
+  const unrelated = await record('UNRELATED_DOCUMENT_COUNTS', async () => ({
+    users: await clinicDB.users.countDocuments({
+      $nor: [{ name: 'Matrix Test', email: 'matrix@example.com' }]
+    }),
+    appointments: await clinicDB.appointments.countDocuments({ reason: { $ne: 'matrix test' } })
+  }));
+  // Actual result (UNRELATED_DOCUMENT_COUNTS): allowed; {"users": 0, "appointments": 0}
+  if (unrelated.result.users || unrelated.result.appointments) {
+    throw new Error('Review unrelated clinic documents before resetting the Task 2 fixtures.');
+  }
+
+  // Create the collections explicitly so operation B tests insert privileges.
+  // On a rerun, keep existing empty collections and report that creation was skipped.
+  async function ensureCollection(name) {
+    if (collectionInfo.result.some(collection => collection.name === name)) {
+      return { skipped: true, reason: 'Collection already exists.' };
+    }
+    return clinicDB.createCollection(name);
+  }
+  await record('CREATE_USERS', () => ensureCollection('users'));
+  // Actual result (CREATE_USERS): allowed; {"ok": 1}
+  await record('CREATE_APPOINTMENTS', () => ensureCollection('appointments'));
+  // Actual result (CREATE_APPOINTMENTS): allowed; {"ok": 1}
+
+  await record('RESET_MATRIX_USERS', () => clinicDB.users.deleteMany({
+    name: 'Matrix Test', email: 'matrix@example.com'
+  }));
+  // Actual result (RESET_MATRIX_USERS): allowed; {"acknowledged": true, "deletedCount": 0}
+  await record('RESET_MATRIX_APPOINTMENTS', () => clinicDB.appointments.deleteMany({ reason: 'matrix test' }));
+  // Actual result (RESET_MATRIX_APPOINTMENTS): allowed; {"acknowledged": true, "deletedCount": 0}
+
+  await record('INSERT_MATRIX_USER', () => clinicDB.users.insertOne({
+    name: 'Matrix Test',
+    email: 'matrix@example.com',
+    role: 'admin',
+    active: true
+  }));
+  // Actual result (INSERT_MATRIX_USER): allowed; {"acknowledged": true, "insertedId": {"$oid": "6ae8533aa06befb727d4a1f9"}}
+
+  // Step 2. Exactly two collection resources, each with find, insert, and update.
+  // No inherited roles and no remove, createIndex, or listCollections action.
+  await record('CREATE_FRONTDESK', async () => {
+    const definition = {
+      privileges: [
+        { resource: { db: 'clinic', collection: 'users' }, actions: ['find', 'insert', 'update'] },
+        { resource: { db: 'clinic', collection: 'appointments' }, actions: ['find', 'insert', 'update'] }
+      ],
+      roles: []
+    };
+    if (await clinicDB.getRole('frontdesk')) {
+      return clinicDB.updateRole('frontdesk', definition);
+    }
+    return clinicDB.createRole({ role: 'frontdesk', ...definition });
+  });
+  // Actual result (CREATE_FRONTDESK): allowed; {"ok": 1}
+
+  await record('INSPECT_FRONTDESK', () => clinicDB.getRole('frontdesk', { showPrivileges: true }));
+  // Actual result (INSPECT_FRONTDESK; shortened): allowed; {"role": "frontdesk", "db": "clinic", "privileges": [{"resource": {"db": "clinic", "collection": "users"}, "actions": ["find", "insert", "update"]}, {"resource": {"db": "clinic", "collection": "appointments"}, "actions": ["find", "insert", "update"]}], "roles": []}
+
+  // Step 3. These are MongoDB accounts, all created in the clinic database.
+  async function saveUser(user, role) {
+    const definition = {
+      pwd: labPassword,
+      roles: [{ role, db: 'clinic' }]
+    };
+    if (await clinicDB.getUser(user)) return clinicDB.updateUser(user, definition);
+    return clinicDB.createUser({ user, ...definition });
+  }
+  await record('CREATE_APP', () => saveUser('clinicApp', 'readWrite'));
+  // Actual result (CREATE_APP): allowed; {"ok": 1}
+  await record('CREATE_AUDITOR', () => saveUser('auditor', 'read'));
+  // Actual result (CREATE_AUDITOR): allowed; {"ok": 1}
+  await record('CREATE_RECEPTION', () => saveUser('reception', 'frontdesk'));
+  // Actual result (CREATE_RECEPTION): allowed; {"ok": 1}
+
+  await record('INITIAL_USERS', () => clinicDB.getUsers());
+  // Actual result (INITIAL_USERS; shortened): allowed; {"users": [{"user": "auditor", "db": "clinic", "roles": [{"role": "read", "db": "clinic"}]}, {"user": "clinicApp", "db": "clinic", "roles": [{"role": "readWrite", "db": "clinic"}]}, {"user": "mechSha1", "db": "clinic", "roles": [{"role": "read", "db": "clinic"}]}, {"user": "mechSha256", "db": "clinic", "roles": [{"role": "read", "db": "clinic"}]}, {"user": "reception", "db": "clinic", "roles": [{"role": "frontdesk", "db": "clinic"}]}], "ok": 1}
+
+  // Step 4. The predictions are at the top of this file, written before testing.
+
+  // Operation B is reused unchanged for the matrix and the later account tests.
+  async function insertMatrixAppointment(database) {
+    return database.appointments.insertOne({
+      doctorId: new ObjectId(),
+      patientId: new ObjectId(),
+      start: new Date(),
+      durationMin: 15,
+      reason: 'matrix test',
+      status: 'scheduled',
+      fee: 0
+    });
+  }
+
+  // Step 5. This is the single six-operation block. Run it for all four connections.
+  async function runSixOperations(label, database) {
+    // A. Find one document in users.
+    await record(label + '_A', () => database.users.findOne({
+      name: 'Matrix Test', email: 'matrix@example.com'
+    }), true);
+    // Actual result (APP_A): allowed; {"_id": {"$oid": "6ae8533aa06befb727d4a1f9"}, "name": "Matrix Test", "email": "matrix@example.com", "role": "admin", "active": true}
+    // Actual result (AUDITOR_A): allowed; {"_id": {"$oid": "6ae8533aa06befb727d4a1f9"}, "name": "Matrix Test", "email": "matrix@example.com", "role": "admin", "active": true}
+    // Actual result (RECEPTION_A): allowed; {"_id": {"$oid": "6ae8533aa06befb727d4a1f9"}, "name": "Matrix Test", "email": "matrix@example.com", "role": "admin", "active": true}
+    // Actual result (ADMIN_A): allowed; {"_id": {"$oid": "6ae8533aa06befb727d4a1f9"}, "name": "Matrix Test", "email": "matrix@example.com", "role": "admin", "active": true}
+
+    // B. Insert the required appointment, with newly generated ObjectIds.
+    await record(label + '_B', () => insertMatrixAppointment(database), true);
+    // Actual result (APP_B): allowed; {"acknowledged": true, "insertedId": {"$oid": "6ae8533aa06befb727d4a1fc"}}
+    // Actual result (AUDITOR_B; shortened): denied; {"name": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on clinic to execute command { insert: \"appointments\", ... }"}
+    // Actual result (RECEPTION_B): allowed; {"acknowledged": true, "insertedId": {"$oid": "6ae8533aa06befb727d4a202"}}
+    // Actual result (ADMIN_B): allowed; {"acknowledged": true, "insertedId": {"$oid": "6ae8533aa06befb727d4a205"}}
+
+    // C. Set a new phone on the Matrix Test user.
+    await record(label + '_C', () => database.users.updateOne(
+      { name: 'Matrix Test', email: 'matrix@example.com' },
+      { $set: { phone: '555-0400' } }
+    ), true);
+    // Actual result (APP_C): allowed; {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}
+    // Actual result (AUDITOR_C; shortened): denied; {"name": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on clinic to execute command { update: \"users\", ... }"}
+    // Actual result (RECEPTION_C): allowed; {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}
+    // Actual result (ADMIN_C): allowed; {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}
+
+    // D. Delete one appointment whose reason is matrix test.
+    await record(label + '_D', () => database.appointments.deleteOne({ reason: 'matrix test' }), true);
+    // Actual result (APP_D): allowed; {"acknowledged": true, "deletedCount": 1}
+    // Actual result (AUDITOR_D; shortened): denied; {"name": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on clinic to execute command { delete: \"appointments\", ... }"}
+    // Actual result (RECEPTION_D; shortened): denied; {"name": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on clinic to execute command { delete: \"appointments\", ... }"}
+    // Actual result (ADMIN_D): allowed; {"acknowledged": true, "deletedCount": 1}
+
+    // E. Create a non-unique index on users.email.
+    await record(label + '_E', () => database.users.createIndex({ email: 1 }, { unique: false }), true);
+    // Actual result (APP_E): allowed; "email_1"
+    // Actual result (AUDITOR_E; shortened): denied; {"name": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on clinic to execute command { createIndexes: \"users\", ... }"}
+    // Actual result (RECEPTION_E; shortened): denied; {"name": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on clinic to execute command { createIndexes: \"users\", ... }"}
+    // Actual result (ADMIN_E): allowed; "email_1"
+
+    // F. List collection names using the shell helper.
+    await record(label + '_F', async () => (await database.getCollectionNames()).sort(), true);
+    // Actual result (APP_F): allowed; ["appointments", "users"]
+    // Actual result (AUDITOR_F): allowed; ["appointments", "users"]
+    // Actual result (RECEPTION_F; shortened): denied; {"name": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on clinic to execute command { listCollections: 1, ... }"}
+    // Actual result (ADMIN_F): allowed; ["appointments", "users"]
+  }
+
+  for (const profile of [
+    { label: 'APP', connection: 'lab-app', user: 'clinicApp', authSource: 'clinic' },
+    { label: 'AUDITOR', connection: 'lab-auditor', user: 'auditor', authSource: 'clinic' },
+    { label: 'RECEPTION', connection: 'lab-reception', user: 'reception', authSource: 'clinic' },
+    { label: 'ADMIN', connection: 'lab-admin', user: 'labAdmin', authSource: 'admin' }
+  ]) {
+    // Before each block, admin removes the phone and any previous email index.
+    // Thus successful C changes a value, and successful E creates a real index.
+    await record('PREPARE_' + profile.label, async () => {
+      const phoneReset = await clinicDB.users.updateOne(
+        { name: 'Matrix Test', email: 'matrix@example.com' },
+        { $unset: { phone: '' } }
+      );
+      const indexes = await clinicDB.users.getIndexes();
+      const emailIndexReset = indexes.some(index => index.name === 'email_1')
+        ? await clinicDB.users.dropIndex('email_1')
+        : null;
+      return { phoneReset, emailIndexReset };
+    });
+    // Actual result (PREPARE_APP): allowed; {"phoneReset": {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 0, "upsertedCount": 0}, "emailIndexReset": null}
+    // Actual result (PREPARE_AUDITOR): allowed; {"phoneReset": {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}, "emailIndexReset": {"nIndexesWas": 2, "ok": 1}}
+    // Actual result (PREPARE_RECEPTION): allowed; {"phoneReset": {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 0, "upsertedCount": 0}, "emailIndexReset": null}
+    // Actual result (PREPARE_ADMIN): allowed; {"phoneReset": {"acknowledged": true, "insertedId": null, "matchedCount": 1, "modifiedCount": 1, "upsertedCount": 0}, "emailIndexReset": null}
+
+    const testDB = await connect(userURI(profile.user, profile.authSource));
+    await record('CONNECTION_' + profile.label, () => testDB.runCommand({ connectionStatus: 1 }));
+    // Actual result (CONNECTION_APP): allowed; {"authInfo": {"authenticatedUsers": [{"user": "clinicApp", "db": "clinic"}], "authenticatedUserRoles": [{"role": "readWrite", "db": "clinic"}]}, "ok": 1}
+    // Actual result (CONNECTION_AUDITOR): allowed; {"authInfo": {"authenticatedUsers": [{"user": "auditor", "db": "clinic"}], "authenticatedUserRoles": [{"role": "read", "db": "clinic"}]}, "ok": 1}
+    // Actual result (CONNECTION_RECEPTION): allowed; {"authInfo": {"authenticatedUsers": [{"user": "reception", "db": "clinic"}], "authenticatedUserRoles": [{"role": "frontdesk", "db": "clinic"}]}, "ok": 1}
+    // Actual result (CONNECTION_ADMIN): allowed; {"authInfo": {"authenticatedUsers": [{"user": "labAdmin", "db": "admin"}], "authenticatedUserRoles": [{"role": "readWriteAnyDatabase", "db": "admin"}, {"role": "userAdminAnyDatabase", "db": "admin"}]}, "ok": 1}
+    await runSixOperations(profile.label, testDB);
+  }
+
+  // Observed permission matrix (actual results):
+  // Operation | app                      | auditor                  | reception                | admin
+  // A         | allowed                  | allowed                  | allowed                  | allowed
+  // B         | allowed                  | denied: Unauthorized     | allowed                  | allowed
+  // C         | allowed                  | denied: Unauthorized     | allowed                  | allowed
+  // D         | allowed                  | denied: Unauthorized     | denied: Unauthorized     | allowed
+  // E         | allowed                  | denied: Unauthorized     | denied: Unauthorized     | allowed
+  // F         | allowed                  | allowed                  | denied: Unauthorized     | allowed
+  // All denied cells returned code 13, Unauthorized: "not authorized on clinic to execute command ...".
+  // Reception/F was the only incorrect prediction; the prediction table above is intentionally unchanged.
+
+  // Explain the unexpected reception/F result with a separate restricted query.
+  // The tested getCollectionNames() call sent authorizedCollections: false.
+  // This additional command explicitly requests only names reception can access.
+  // It is not substituted for operation F in the six-operation matrix.
+  const receptionDB = await connect(userURI('reception'));
+  await record('RECEPTION_AUTHORIZED_NAMES', () => receptionDB.runCommand({
+    listCollections: 1,
+    nameOnly: true,
+    authorizedCollections: true
+  }));
+  // Actual result (RECEPTION_AUTHORIZED_NAMES): allowed; {"cursor": {"id": 0, "ns": "clinic.$cmd.listCollections", "firstBatch": [{"name": "users", "type": "collection"}, {"name": "appointments", "type": "collection"}]}, "ok": 1}
+  // Source: https://www.mongodb.com/docs/manual/reference/command/listCollections/
+
+  // Step 6. As admin, delete the appointment left over from the matrix tests.
+  await record('CLEANUP_MATRIX_APPOINTMENTS', () => clinicDB.appointments.deleteMany({ reason: 'matrix test' }));
+  // Actual result (CLEANUP_MATRIX_APPOINTMENTS): allowed; {"acknowledged": true, "deletedCount": 1}
+
+  // Step 7. Revoke readWrite and create a fresh connection before repeating B.
+  await record('REVOKE_APP_READWRITE', () => clinicDB.revokeRolesFromUser('clinicApp', [
+    { role: 'readWrite', db: 'clinic' }
+  ]));
+  // Actual result (REVOKE_APP_READWRITE): allowed; {"ok": 1}
+
+  const appWithoutRoles = await connect(userURI('clinicApp'));
+  await record('APP_WITHOUT_ROLES_STATUS', () => appWithoutRoles.runCommand({ connectionStatus: 1 }));
+  // Actual result (APP_WITHOUT_ROLES_STATUS): allowed; {"authInfo": {"authenticatedUsers": [{"user": "clinicApp", "db": "clinic"}], "authenticatedUserRoles": []}, "ok": 1}
+  await record('APP_WITHOUT_ROLES_B', () => insertMatrixAppointment(appWithoutRoles), true);
+  // Actual result (APP_WITHOUT_ROLES_B; shortened): denied; {"name": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on clinic to execute command { insert: \"appointments\", ... }"}
+  // With no assigned role, clinicApp lacks the insert action on appointments.
+
+  await record('GRANT_APP_READ', () => clinicDB.grantRolesToUser('clinicApp', [
+    { role: 'read', db: 'clinic' }
+  ]));
+  // Actual result (GRANT_APP_READ): allowed; {"ok": 1}
+
+  const appReadOnly = await connect(userURI('clinicApp'));
+  await record('APP_READ_STATUS', () => appReadOnly.runCommand({ connectionStatus: 1 }));
+  // Actual result (APP_READ_STATUS): allowed; {"authInfo": {"authenticatedUsers": [{"user": "clinicApp", "db": "clinic"}], "authenticatedUserRoles": [{"role": "read", "db": "clinic"}]}, "ok": 1}
+  await record('APP_READ_A', () => appReadOnly.users.findOne({
+    name: 'Matrix Test', email: 'matrix@example.com'
+  }), true);
+  // Actual result (APP_READ_A): allowed; {"_id": {"$oid": "6ae8533aa06befb727d4a1f9"}, "name": "Matrix Test", "email": "matrix@example.com", "role": "admin", "active": true, "phone": "555-0400"}
+  await record('APP_READ_B', () => insertMatrixAppointment(appReadOnly), true);
+  // Actual result (APP_READ_B; shortened): denied; {"name": "MongoServerError", "code": 13, "codeName": "Unauthorized", "message": "not authorized on clinic to execute command { insert: \"appointments\", ... }"}
+  // The read role provides find for A, but it does not provide insert for B.
+
+  await record('FINAL_USERS', () => clinicDB.getUsers());
+  // Actual result (FINAL_USERS; shortened): allowed; {"users": [{"user": "auditor", "db": "clinic", "roles": [{"role": "read", "db": "clinic"}]}, {"user": "clinicApp", "db": "clinic", "roles": [{"role": "read", "db": "clinic"}]}, {"user": "mechSha1", "db": "clinic", "roles": [{"role": "read", "db": "clinic"}]}, {"user": "mechSha256", "db": "clinic", "roles": [{"role": "read", "db": "clinic"}]}, {"user": "reception", "db": "clinic", "roles": [{"role": "frontdesk", "db": "clinic"}]}], "ok": 1}
+  await record('FINAL_COUNTS', async () => ({
+    users: await clinicDB.users.countDocuments({}),
+    appointments: await clinicDB.appointments.countDocuments({})
+  }));
+  // Actual result (FINAL_COUNTS): allowed; {"users": 1, "appointments": 0}
+}
+
+runTask2();
+
+// Written answer 1. Explain denied cells and compare predictions with observations.
+// The auditor was denied B, C, D, and E because it lacks insert, update, remove,
+// and createIndex, respectively. Reception was denied D, E, and F because it
+// lacks remove, createIndex, and listCollections, respectively.
+// My reception/F prediction was wrong: this mongosh version sent
+// authorizedCollections: false when getCollectionNames() was called.
+// The separate name-only query with authorizedCollections: true succeeds for
+// collections reception can access; it is a different command from matrix F.
+
+// Written answer 2. How could the design hide allergies from frontdesk?
+// Move allergies and other medical details into a separate patientMedical collection
+// that frontdesk cannot read. Keep only the fields needed by reception in users,
+// and grant access to patientMedical only to accounts that need medical information.
+
+// Written answer 3. Explain the two meanings of role, one sentence each.
+// For the MongoDB account reception, frontdesk is a database role that grants
+// find, insert, and update privileges on the users and appointments collections.
+// For Dr. Elena Rossi's clinic user document, role: 'doctor' is an ordinary data
+// field describing her job; it does not grant any MongoDB database privileges.

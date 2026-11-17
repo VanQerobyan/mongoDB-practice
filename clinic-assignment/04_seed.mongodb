@@ -1,0 +1,177 @@
+// Task 4, Part A - Clinic: seed the assignment data
+
+// Run after Task 3, using lab-admin. This file is rerunnable.
+// It clears documents with deleteMany and preserves both collections and validators.
+// Local runner: python3 .lab/run_task4.py seed
+// Manual command: mongosh 'mongodb://localhost:27019' --norc --quiet --file 04_seed.mongodb
+// Set CLINIC_LAB_PASSWORD to the local throwaway password from Task 1.
+// No actual password is stored here; <password> is only a placeholder.
+// Results below are from the verified seed + CRUD rerun; generated IDs vary.
+// The initial seed cleared 0/0 documents; the rerun cleared 4 appointments
+// and 8 users left by CRUD, then restored the required 9/9 seed counts.
+
+use('clinic');
+
+async function runTask4Seed() {
+  const labPassword = process.env.CLINIC_LAB_PASSWORD || '<password>';
+  if (labPassword === '<password>') {
+    throw new Error('Set CLINIC_LAB_PASSWORD to your throwaway lab password before running.');
+  }
+  const clinicDB = await connect('mongodb://labAdmin:' + encodeURIComponent(labPassword) +
+    '@localhost:27019/clinic?authSource=admin&serverSelectionTimeoutMS=5000');
+
+  async function record(label, operation) {
+    const result = await operation();
+    print('__CLINIC_TASK4__ ' + EJSON.stringify({ label, status: 'succeeded', result }, { relaxed: true }));
+    return result;
+  }
+
+  // Confirm Task 3's validators before changing the documents.
+  const before = await record('SEED_VALIDATORS_BEFORE', async () => (await clinicDB.getCollectionInfos())
+    .filter(info => ['users', 'appointments'].includes(info.name))
+    .sort((left, right) => left.name.localeCompare(right.name)));
+  // Actual result (SEED_VALIDATORS_BEFORE; shortened): [{"name": "appointments", "validationLevel": "strict", "validationAction": "error"}, {"name": "users", "validationLevel": "strict", "validationAction": "error"}]
+  if (before.length !== 2 || before.some(info => !info.options.validator ||
+      info.options.validationLevel !== 'strict' || info.options.validationAction !== 'error')) {
+    throw new Error('Run Task 3 first: both collections must have strict/error validators.');
+  }
+
+  // Clear appointments before users so the reset does not leave dangling references.
+  await record('SEED_CLEAR_APPOINTMENTS', () => clinicDB.appointments.deleteMany({}));
+  // Actual result (SEED_CLEAR_APPOINTMENTS): {"acknowledged": true, "deletedCount": 4}
+  await record('SEED_CLEAR_USERS', () => clinicDB.users.deleteMany({}));
+  // Actual result (SEED_CLEAR_USERS): {"acknowledged": true, "deletedCount": 8}
+
+  // U1-U9 are labels in comments only. Missing optional fields stay absent.
+  const insertedUsers = await record('SEED_INSERT_USERS', () => clinicDB.users.insertMany([
+    // U1
+    {
+      name: 'Dr. Elena Rossi', email: 'elena.rossi@clinic.test', phone: '555-0201',
+      role: 'doctor', active: true,
+      doctor: { specialty: 'cardiology', licenseNo: 'MD-1001' }
+    },
+    // U2
+    {
+      name: 'Dr. Hamid Karimi', email: 'hamid.karimi@clinic.test', phone: '555-0202',
+      role: 'doctor', active: true,
+      doctor: { specialty: 'pediatrics', licenseNo: 'MD-1002' }
+    },
+    // U3: no phone; initially inactive.
+    {
+      name: 'Dr. Sofia Lindqvist', email: 'sofia.lindqvist@clinic.test',
+      role: 'doctor', active: false,
+      doctor: { specialty: 'dermatology', licenseNo: 'MD-1003' }
+    },
+    // U4
+    {
+      name: 'Ana Costa', email: 'ana.costa@example.com', phone: '555-0301',
+      role: 'patient', active: true,
+      patient: { birthDate: new Date('1985-04-12T00:00:00Z'), bloodType: 'A+', allergies: ['penicillin'] }
+    },
+    // U5: allergies is present as an empty array.
+    {
+      name: 'Ben Okoye', email: 'ben.okoye@example.com', phone: '555-0302',
+      role: 'patient', active: true,
+      patient: { birthDate: new Date('1990-11-02T00:00:00Z'), bloodType: 'O-', allergies: [] }
+    },
+    // U6: no phone.
+    {
+      name: 'Clara Meyer', email: 'clara.meyer@example.com',
+      role: 'patient', active: true,
+      patient: { birthDate: new Date('2015-06-30T00:00:00Z'), bloodType: 'B+', allergies: ['peanuts', 'latex'] }
+    },
+    // U7: no bloodType.
+    {
+      name: 'Dmitri Volkov', email: 'dmitri.volkov@example.com', phone: '555-0304',
+      role: 'patient', active: true,
+      patient: { birthDate: new Date('1972-02-19T00:00:00Z'), allergies: ['sulfa'] }
+    },
+    // U8: no allergies field at all.
+    {
+      name: 'Eva Nilsson', email: 'eva.nilsson@example.com', phone: '555-0305',
+      role: 'patient', active: true,
+      patient: { birthDate: new Date('1998-09-05T00:00:00Z'), bloodType: 'AB+' }
+    },
+    // U9: no doctor or patient subdocument.
+    {
+      name: 'Maya Admin', email: 'maya@clinic.test', phone: '555-0100', role: 'admin', active: true
+    }
+  ]));
+  // Actual result (SEED_INSERT_USERS): {"acknowledged": true, "insertedIds": {"0": {"$oid": "6ae874a3ed850c0af6a762a7"}, "1": {"$oid": "6ae874a3ed850c0af6a762a8"}, "2": {"$oid": "6ae874a3ed850c0af6a762a9"}, "3": {"$oid": "6ae874a3ed850c0af6a762aa"}, "4": {"$oid": "6ae874a3ed850c0af6a762ab"}, "5": {"$oid": "6ae874a3ed850c0af6a762ac"}, "6": {"$oid": "6ae874a3ed850c0af6a762ad"}, "7": {"$oid": "6ae874a3ed850c0af6a762ae"}, "8": {"$oid": "6ae874a3ed850c0af6a762af"}}}
+
+  // Capture the returned IDs in insertion order. No ObjectId values are typed by hand.
+  const ids = insertedUsers.insertedIds;
+  await record('SEED_INSERT_APPOINTMENTS', () => clinicDB.appointments.insertMany([
+    // A1: U1 -> U4
+    {
+      doctorId: ids[0], patientId: ids[3], start: new Date('2025-02-03T09:00:00Z'),
+      durationMin: 30, reason: 'Chest pain follow-up', status: 'completed', fee: 120,
+      prescriptions: [{ drug: 'atenolol', dose: '25mg', days: 30 }]
+    },
+    // A2: U1 -> U7
+    {
+      doctorId: ids[0], patientId: ids[6], start: new Date('2025-02-03T10:00:00Z'),
+      durationMin: 45, reason: 'ECG', status: 'completed', fee: 150
+    },
+    // A3: U2 -> U6
+    {
+      doctorId: ids[1], patientId: ids[5], start: new Date('2025-02-05T14:00:00Z'),
+      durationMin: 30, reason: 'Fever', status: 'completed', fee: 80,
+      prescriptions: [{ drug: 'paracetamol', dose: '250mg', days: 3 }]
+    },
+    // A4: U1 -> U4
+    {
+      doctorId: ids[0], patientId: ids[3], start: new Date('2025-03-10T09:30:00Z'),
+      durationMin: 30, reason: 'Blood pressure check', status: 'completed', fee: 90
+    },
+    // A5: U2 -> U5
+    {
+      doctorId: ids[1], patientId: ids[4], start: new Date('2025-03-12T11:00:00Z'),
+      durationMin: 20, reason: 'Vaccination', status: 'completed', fee: 60
+    },
+    // A6: U1 -> U5
+    {
+      doctorId: ids[0], patientId: ids[4], start: new Date('2025-03-20T16:00:00Z'),
+      durationMin: 30, reason: 'Palpitations', status: 'scheduled', fee: 100
+    },
+    // A7: U2 -> U6
+    {
+      doctorId: ids[1], patientId: ids[5], start: new Date('2025-03-25T14:00:00Z'),
+      durationMin: 30, reason: 'Follow-up', status: 'scheduled', fee: 70
+    },
+    // A8: U1 -> U7
+    {
+      doctorId: ids[0], patientId: ids[6], start: new Date('2025-03-28T09:00:00Z'),
+      durationMin: 30, reason: 'Stress test', status: 'cancelled', fee: 0
+    },
+    // A9: U1 -> U4
+    {
+      doctorId: ids[0], patientId: ids[3], start: new Date('2025-04-02T10:00:00Z'),
+      durationMin: 30, reason: 'Test results', status: 'scheduled', fee: 90
+    }
+  ]));
+  // Actual result (SEED_INSERT_APPOINTMENTS): {"acknowledged": true, "insertedIds": {"0": {"$oid": "6ae874a3ed850c0af6a762b0"}, "1": {"$oid": "6ae874a3ed850c0af6a762b1"}, "2": {"$oid": "6ae874a3ed850c0af6a762b2"}, "3": {"$oid": "6ae874a3ed850c0af6a762b3"}, "4": {"$oid": "6ae874a3ed850c0af6a762b4"}, "5": {"$oid": "6ae874a3ed850c0af6a762b5"}, "6": {"$oid": "6ae874a3ed850c0af6a762b6"}, "7": {"$oid": "6ae874a3ed850c0af6a762b7"}, "8": {"$oid": "6ae874a3ed850c0af6a762b8"}}}
+
+  // Read back the data to verify exact values, optional fields, and references.
+  await record('SEED_USERS_SNAPSHOT', () => clinicDB.users.find({}).sort({ name: 1 }).toArray());
+  // Actual result (SEED_USERS_SNAPSHOT; shortened): {"count": 9, "users": [{"name": "Ana Costa", "role": "patient", "active": true}, {"name": "Ben Okoye", "role": "patient", "active": true}, {"name": "Clara Meyer", "role": "patient", "active": true}, {"name": "Dmitri Volkov", "role": "patient", "active": true}, {"name": "Dr. Elena Rossi", "role": "doctor", "active": true}, {"name": "Dr. Hamid Karimi", "role": "doctor", "active": true}, {"name": "Dr. Sofia Lindqvist", "role": "doctor", "active": false}, {"name": "Eva Nilsson", "role": "patient", "active": true}, {"name": "Maya Admin", "role": "admin", "active": true}]}
+  await record('SEED_APPOINTMENTS_SNAPSHOT', () => clinicDB.appointments.find({}).sort({ start: 1 }).toArray());
+  // Actual result (SEED_APPOINTMENTS_SNAPSHOT; shortened): {"count": 9, "appointments": [{"reason": "Chest pain follow-up", "status": "completed", "fee": 120}, {"reason": "ECG", "status": "completed", "fee": 150}, {"reason": "Fever", "status": "completed", "fee": 80}, {"reason": "Blood pressure check", "status": "completed", "fee": 90}, {"reason": "Vaccination", "status": "completed", "fee": 60}, {"reason": "Palpitations", "status": "scheduled", "fee": 100}, {"reason": "Follow-up", "status": "scheduled", "fee": 70}, {"reason": "Stress test", "status": "cancelled", "fee": 0}, {"reason": "Test results", "status": "scheduled", "fee": 90}]}
+
+  await record('SEED_VALIDATORS_AFTER', async () => (await clinicDB.getCollectionInfos())
+    .filter(info => ['users', 'appointments'].includes(info.name))
+    .sort((left, right) => left.name.localeCompare(right.name)));
+  // Actual result (SEED_VALIDATORS_AFTER; shortened): [{"name": "appointments", "validationLevel": "strict", "validationAction": "error"}, {"name": "users", "validationLevel": "strict", "validationAction": "error"}]
+
+  // Final seed check: 9 users and 9 appointments.
+  const counts = await record('SEED_COUNTS', async () => ({
+    users: await clinicDB.users.countDocuments({}),
+    appointments: await clinicDB.appointments.countDocuments({})
+  }));
+  // Actual result (SEED_COUNTS): {"users": 9, "appointments": 9}
+  if (counts.users !== 9 || counts.appointments !== 9) {
+    throw new Error('Seed counts do not match the required 9 users and 9 appointments.');
+  }
+}
+
+runTask4Seed();
